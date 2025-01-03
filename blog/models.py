@@ -11,6 +11,7 @@ from django_hosts.resolvers import reverse
 from docutils.core import publish_parts
 from markdown import markdown
 from markdown.extensions.toc import TocExtension, slugify as _md_title_slugify
+from taggit.managers import TaggableManager
 
 BLOG_DOCUTILS_SETTINGS = {
     "doctitle_xform": False,
@@ -89,6 +90,7 @@ class Entry(models.Model):
     body = models.TextField()
     body_html = models.TextField()
     author = models.CharField(max_length=100)
+    tags = TaggableManager()
 
     objects = EntryQuerySet.as_manager()
 

@@ -11,6 +11,13 @@
   {% blocktranslate trimmed with author=object.author pub_date=object.pub_date|date:"DATE_FORMAT" %}
     Posted by <strong>{{ author }}</strong> on {{ pub_date }}
   {% endblocktranslate %}
+
+  {% if object.tags.all %}
+    Tags: 
+    {% for tag in object.tags.all %}
+      <a href="{% url 'weblog:index_tagged' tag=tag.name %}">{{ tag.name }}</a>,
+    {% endfor %}
+  {% endif %}
 </span>
 {% if not summary_first %}
   {{ object.summary_html|safe }}
