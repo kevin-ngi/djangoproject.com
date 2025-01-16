@@ -20,5 +20,6 @@ urlpatterns = [
         name="archive-month",
     ),
     path("<int:year>/", views.BlogYearArchiveView.as_view(), name="archive-year"),
+    path("<str:tag>/", views.BlogArchiveIndexView.as_view(), name="index_tagged"),
     path("", views.BlogArchiveIndexView.as_view(), name="index"),
 ]

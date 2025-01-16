@@ -18,9 +18,13 @@ class BlogViewMixin:
 
     def get_queryset(self):
         if self.request.user.is_staff:
-            return Entry.objects.all()
+            entries = Entry.objects.all()
         else:
-            return Entry.objects.published()
+            entries = Entry.objects.published()
+        if tag := self.kwargs.get("tag", None):
+            entries = entries.filter(tags__name=tag)
+        return entries
+        
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -28,6 +32,8 @@ class BlogViewMixin:
         events_queryset = Event.objects.future().published()
 
         context["events"] = events_queryset[:3]
+
+        context["popular_tags"] = ["django", "6.x", "community"]
 
         return context
 

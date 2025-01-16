@@ -89,6 +89,7 @@ INSTALLED_APPS = [
     "django.contrib.sitemaps",
     "django_push.subscriber",
     "django_read_only",
+    "taggit",
 ]
 
 LANGUAGE_CODE = "en-us"

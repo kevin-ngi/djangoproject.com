@@ -13,6 +13,13 @@
       </button>
     </form>
   {% endcomment %}
+  
+  <p>
+    Popular tags: 
+    {% for tag in popular_tags %}
+      <a href="{% url 'weblog:index_tagged' tag=tag %}">{{ tag }}</a>,
+    {% endfor %}
+  </p>
 
   <ul class="list-news">
 
