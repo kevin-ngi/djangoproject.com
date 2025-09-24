@@ -4,8 +4,11 @@ APP_LIST ?= accounts aggregator blog contact dashboard djangoproject docs founda
 SCSS = djangoproject/scss
 STATIC = djangoproject/static
 
-ci: test
+ci: compilemessages test
 	@python -m coverage report
+
+compilemessages:
+	python -m manage compilemessages
 
 collectstatics: compile-scss
 	python -m manage collectstatic --noinput
@@ -19,19 +22,13 @@ compile-scss-debug:
 install:
 	python -m pip install --requirement requirements/dev.txt
 
-isort:
-	python -m isort $(APP_LIST)
-
-isort-check:
-	python -m isort --check $(APP_LIST)
-
 migrations-check:
 	python -m manage makemigrations --check --dry-run
 
 run:
 	python -m manage runserver 0.0.0.0:8000
 
-test: migrations-check
+test:
 	@python -m coverage run --source=. --module manage test --verbosity 2 $(APP_LIST)
 
 watch-scss:

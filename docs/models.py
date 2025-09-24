@@ -2,7 +2,7 @@ import datetime
 import html
 import json
 import operator
-from functools import reduce
+from functools import partial, reduce
 from pathlib import Path
 
 from django.conf import settings
@@ -16,7 +16,11 @@ from django.contrib.postgres.search import (
 )
 from django.core.cache import cache
 from django.db import models, transaction
-from django.db.models import Prefetch, Q
+from django.db.models import (
+    Case,
+    Q,
+    When,
+)
 from django.db.models.fields.json import KeyTextTransform
 from django.utils.functional import cached_property
 from django.utils.html import strip_tags
@@ -27,12 +31,14 @@ from releases.models import Release
 from . import utils
 from .search import (
     DEFAULT_TEXT_SEARCH_CONFIG,
-    DOCUMENT_SEARCH_VECTOR,
+    START_SEL,
+    STOP_SEL,
     TSEARCH_CONFIG_LANGUAGES,
+    get_document_search_vector,
 )
 
 
-class DocumentReleaseManager(models.Manager):
+class DocumentReleaseQuerySet(models.QuerySet):
     def current(self, lang="en"):
         current = self.get(is_default=True)
         if lang != "en":
@@ -56,10 +62,20 @@ class DocumentReleaseManager(models.Manager):
             )
         return current_version
 
-    def by_version(self, version):
-        return self.filter(
-            **{"release__isnull": True} if version == "dev" else {"release": version}
+    def _by_version_Q(self, version):
+        return (
+            models.Q(release__isnull=True)
+            if version == "dev"
+            else models.Q(release=version)
         )
+
+    def by_version(self, version):
+        return self.filter(self._by_version_Q(version))
+
+    def by_versions(self, *versions):
+        if not versions:
+            raise ValueError("by_versions() takes at least one argument")
+        return self.filter(reduce(operator.or_, map(self._by_version_Q, versions)))
 
     def get_by_version_and_lang(self, version, lang):
         return self.by_version(version).get(lang=lang)
@@ -84,7 +100,7 @@ class DocumentRelease(models.Model):
     )
     is_default = models.BooleanField(default=False)
 
-    objects = DocumentReleaseManager()
+    objects = DocumentReleaseQuerySet.as_manager()
 
     class Meta:
         unique_together = ("lang", "release")
@@ -242,71 +258,65 @@ class DocumentQuerySet(models.QuerySet):
         else:
             return self.none()
 
-    def search(self, query_text, release):
+    def search(self, query_text, release, document_category=None):
         """Use full-text search to return documents matching query_text."""
         query_text = query_text.strip()
         if query_text:
             search_query = SearchQuery(
                 query_text, config=models.F("config"), search_type="websearch"
             )
-            search_rank = SearchRank(models.F("search"), search_query)
-            similarity = TrigramSimilarity("title", query_text)
-            return (
-                self.prefetch_related(
-                    Prefetch(
-                        "release",
-                        queryset=DocumentRelease.objects.only("lang", "release"),
-                    ),
-                    Prefetch(
-                        "release__release", queryset=Release.objects.only("version")
-                    ),
-                )
-                .filter(
-                    release_id=release.id,
-                    search=search_query,
-                )
+            search_rank = SearchRank(models.F("search_vector"), search_query)
+            search = partial(
+                SearchHeadline,
+                start_sel=START_SEL,
+                stop_sel=STOP_SEL,
+                config=models.F("config"),
+            )
+            base_filter = Q(release_id=release.id)
+            if document_category:
+                base_filter &= Q(metadata__parents__startswith=document_category)
+            base_qs = (
+                self.select_related("release__release")
+                .filter(base_filter)
                 .annotate(
-                    rank=search_rank + similarity,
-                    headline=SearchHeadline(
-                        "title",
-                        search_query,
-                        start_sel="<mark>",
-                        stop_sel="</mark>",
-                        config=models.F("config"),
-                    ),
-                    highlight=SearchHeadline(
+                    headline=search("title", search_query),
+                    highlight=search(
                         KeyTextTransform("body", "metadata"),
                         search_query,
-                        start_sel="<mark>",
-                        stop_sel="</mark>",
-                        config=models.F("config"),
+                    ),
+                    searched_python_objects=search(
+                        KeyTextTransform("python_objects_search", "metadata"),
+                        search_query,
+                        highlight_all=True,
                     ),
                     breadcrumbs=models.F("metadata__breadcrumbs"),
+                    python_objects=models.F("metadata__python_objects"),
                 )
-                .order_by("-rank")
                 .only(
                     "path",
-                    "release",
+                    "release__lang",
+                    "release__release__version",
                 )
             )
+            vector_qs = (
+                base_qs.alias(rank=search_rank)
+                .filter(search_vector=search_query)
+                .order_by("-rank")
+            )
+            if not vector_qs:
+                return (
+                    base_qs.alias(
+                        similarity=TrigramSimilarity(
+                            "title", utils.sanitize_for_trigram(query_text)
+                        )
+                    )
+                    .filter(similarity__gt=0.3)
+                    .order_by("-similarity")
+                )
+            else:
+                return vector_qs
         else:
             return self.none()
-
-    def search_reset(self):
-        """Set to null all not null Document's search vector fields."""
-        return Document.objects.exclude(search=None).update(search=None)
-
-    def search_update(self):
-        """
-        Update Document's search vector fields using the document definition.
-
-        This method don't index the module pages (since source code is hard to
-        combine with full text search) and the big flattened index of the CBVs.
-        """
-        return Document.objects.exclude(
-            Q(path__startswith="_modules")
-            | Q(path__startswith="ref/class-based-views/flattened-index")
-        ).update(search=DOCUMENT_SEARCH_VECTOR)
 
 
 class Document(models.Model):
@@ -322,17 +332,42 @@ class Document(models.Model):
     path = models.CharField(max_length=500)
     title = models.CharField(max_length=500)
     metadata = models.JSONField(default=dict)
-    search = SearchVectorField(null=True, editable=False)
-    config = models.SlugField(default=DEFAULT_TEXT_SEARCH_CONFIG)
+    # Use Case/When to force the expression to be immutable, per:
+    # https://www.paulox.net/2025/09/08/djangocon-us-2025/
+    search_vector = models.GeneratedField(
+        expression=Case(
+            *[
+                When(config=lang, then=get_document_search_vector(lang))
+                for lang in TSEARCH_CONFIG_LANGUAGES.values()
+            ],
+            default=get_document_search_vector(),
+        ),
+        output_field=SearchVectorField(),
+        db_persist=True,
+    )
+    config = models.SlugField(
+        db_default=DEFAULT_TEXT_SEARCH_CONFIG, default=DEFAULT_TEXT_SEARCH_CONFIG
+    )
 
     objects = DocumentQuerySet.as_manager()
 
     class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(
+                    config__in=[
+                        DEFAULT_TEXT_SEARCH_CONFIG,
+                        *TSEARCH_CONFIG_LANGUAGES.values(),
+                    ]
+                ),
+                name="document_config_allowed_languages",
+            )
+        ]
         indexes = [
             models.Index(
                 fields=["release", "title"], name="document_release_title_idx"
             ),
-            GinIndex(fields=["search"]),
+            GinIndex(fields=["search_vector"], name="document_search_vector_idx"),
         ]
         unique_together = ("release", "path")
 

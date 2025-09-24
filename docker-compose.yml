@@ -21,11 +21,25 @@ services:
             - SQL_PASSWORD=secret
             - SQL_HOST=db
             - SQL_PORT=5432
+            - TRAC_DATABASE=code.djangoproject
+            - TRAC_USER=code.djangoproject
+            - TRAC_PASSWORD=secret
+            - TRAC_HOST=db
+            - TRAC_PORT=5432
+
         depends_on:
-            - db
+            db:
+                condition: service_healthy
     db:
-        image: postgres:14-alpine
+        image: postgres:17-trixie
         environment:
             - POSTGRES_USER=djangoproject
             - POSTGRES_PASSWORD=secret
             - POSTGRES_DB=djangoproject
+        healthcheck:
+            test: ["CMD", "pg_isready", "--host", "db", "--port", "5432"]
+            interval: 1s
+            timeout: 10s
+            retries: 10
+        volumes:
+            - ./initdb/tracdb.sql:/docker-entrypoint-initdb.d/tracdb.sql

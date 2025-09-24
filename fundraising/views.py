@@ -156,10 +156,10 @@ def manage_donations(request, hero):
 def update_card(request):
     donation = get_object_or_404(Donation, id=request.POST["donation_id"])
     try:
-        customer = stripe.Customer.retrieve(donation.stripe_customer_id)
-        subscription = customer.subscriptions.retrieve(donation.stripe_subscription_id)
-        subscription.source = request.POST["stripe_token"]
-        subscription.save()
+        stripe.Customer.modify(
+            donation.stripe_customer_id,
+            source=request.POST["stripe_token"],
+        )
     except stripe.error.StripeError as e:
         data = {"success": False, "error": str(e)}
     else:
@@ -174,7 +174,9 @@ def cancel_donation(request, hero):
     donations = hero.donation_set.exclude(stripe_subscription_id="")
     donation = get_object_or_404(donations, pk=donation_id)
 
-    customer = stripe.Customer.retrieve(donation.stripe_customer_id)
+    customer = stripe.Customer.retrieve(
+        donation.stripe_customer_id, expand=["subscriptions"]
+    )
     customer.subscriptions.retrieve(donation.stripe_subscription_id).delete()
 
     donation.stripe_subscription_id = ""
@@ -316,10 +318,9 @@ class WebhookHandler:
         )
         if interval == "onetime":
             payment_intent = stripe.PaymentIntent.retrieve(session.payment_intent)
-            charge = payment_intent.charges.data[0]
             donation.payment_set.create(
                 amount=dollar_amount,
-                stripe_charge_id=charge.id,
+                stripe_charge_id=payment_intent.latest_charge,
             )
 
         # Send an email message about managing your donation

@@ -15,7 +15,9 @@
 
     <form method="post" action="" class="form-input">
         {% csrf_token %}
-        <input type="hidden" name="next" value="{{ next|default:"/" }}">
+        {% if next %}
+            <input type="hidden" name="next" value="{{ next }}">
+        {% endif %}
 
         <div>
             <label for="id_username">{% translate "Username:" %}</label>
@@ -38,8 +40,8 @@
 {% endblock %}
 
 {% block content-related %}
-    <h1 class="visuallyhidden">{% translate "Help" %}</h1>
     <div role="complementary">
+        <h2 class="visuallyhidden" id="aside-header">{% translate "Additional Information" %}</h2>
         {% url 'registration_register' as register_url %}
         <p>
             {% blocktranslate trimmed %}
